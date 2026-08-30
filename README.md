@@ -6,3 +6,5 @@ AllWeatherNow is a tool that injects live weather to Xplane 12 with more accurat
 2- It is recommended to start the flight with live weather or current weather checkbox unchecked (clear) and wait for 2 minute for live weather to be generated.
 
 3- Try to avoid using other visual effects scripts as it may conflict with each other and will not produce the best result.
+
+4-In case did not work automatically you can always go to plugins then flyWithLua and then reload all lua scripts.
