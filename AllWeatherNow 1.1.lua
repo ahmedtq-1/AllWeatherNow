@@ -99,6 +99,8 @@ local fixed_altitudes = {
 local target_env = {
     temp_c = 15.0,
     dew_point = 10.0,
+    wet_bulb_c = 12.0,
+    precipitation_phase = 0,
     qnh_inhg = 29.92,
     qnh_trend_hpa = 0.0,
     vis_km = 32.0,
@@ -323,8 +325,10 @@ function draw_weather_osd()
     draw_string(30, 920, "Status: " .. bridge_status, status_color)
 
     -- Line 1: Surface Dynamics & Barometric Pressure
-    draw_string(30, 905, string.format("Temp: %.1fC | Dew: %.1fC | QNH: %.2finHg (Trend: %+.2fhPa) | Vis: %.1fkm | Rain: %.0f%% | Storm: %.0f", 
-        curr_env.temp_c, curr_env.dew_point, target_env.qnh_inhg, target_env.qnh_trend_hpa, curr_env.vis_km, curr_env.rain_percent * 100, target_env.storm_dim), "white")
+    local phase_names = {"Clear", "Rain", "Snow", "Wet Snow", "Freez Rain", "Dust Storm"}
+    local p_name = phase_names[(math.floor(target_env.precipitation_phase or 0)) + 1] or "Clear"
+    draw_string(30, 905, string.format("Temp: %.1fC (Wet: %.1fC) | Dew: %.1fC | QNH: %.2finHg | Vis: %.1fkm | Phase: %s | Storm: %.0f", 
+        curr_env.temp_c, target_env.wet_bulb_c or curr_env.temp_c, curr_env.dew_point, target_env.qnh_inhg, curr_env.vis_km, p_name, target_env.storm_dim), "white")
     
     -- Line 2: Atmospheric Convection, Aerosols & Microphysics
     draw_string(30, 890, string.format("CAPE: %.0f J/kg | Ice Index: %.3f | Frz Lvl: %.0fm | Dust: %.1fug/m3 (PM10: %.1f | PM2.5: %.1f) | Dust Ceil: %.0fm", 

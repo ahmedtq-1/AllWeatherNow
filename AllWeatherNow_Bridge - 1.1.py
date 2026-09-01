@@ -15,7 +15,7 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 def fetch_all_weather(lat, lon):
-    aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=pm10,pm2_5,dust"
+    aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=pm10,pm2_5,dust,carbon_monoxide,sulphur_dioxide,aerosol_optical_depth"
     
     wx_url = (
         f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
@@ -32,8 +32,8 @@ def fetch_all_weather(lat, lon):
     )
 
     try:
-        # 1. ISOLATED AIR QUALITY FETCH
-        dust, pm10, pm25 = 0.0, 0.0, 10.0
+        # 1. ISOLATED AIR QUALITY FETCH (Including PM, Dust, CO, SO2, AOD for Smoke/Volcano/Haze Realism)
+        dust, pm10, pm25, co, so2, aod = 0.0, 0.0, 10.0, 150.0, 2.0, 0.15
         try:
             aq_req = requests.get(aq_url, timeout=5)
             if aq_req.status_code == 200:
@@ -41,6 +41,9 @@ def fetch_all_weather(lat, lon):
                 dust = float(aq_res.get('dust') or 0.0)
                 pm10 = float(aq_res.get('pm10') or 0.0)
                 pm25 = float(aq_res.get('pm2_5') or 10.0)
+                co = float(aq_res.get('carbon_monoxide') or 150.0)
+                so2 = float(aq_res.get('sulphur_dioxide') or 2.0)
+                aod = float(aq_res.get('aerosol_optical_depth') or 0.15)
         except Exception as aq_e:
             print(f"[Warning] Air Quality fetch failed, using clear air defaults: {aq_e}")
 
@@ -70,7 +73,31 @@ def fetch_all_weather(lat, lon):
         wmo_code = int(wx_res.get('weather_code') or 0)
         
         rain_percent = min(1.0, max(0.0, rain_mm / 8.0))
-        storm_dim = 1.0 if wmo_code in [95, 96, 99] else 0.0
+        
+        # Enhanced WMO Codes 97 & 98 + Storm / Dusty / Snow Storm Detection & Safety
+        storm_dim = 1.0 if wmo_code in [95, 96, 97, 98, 99] else 0.0
+        is_dust_storm = (wmo_code in [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 98] or dust > 100.0)
+        is_snow_storm = (wmo_code in [71, 73, 75, 77, 85, 86] or (temp_c <= 0.0 and rain_mm > 1.0))
+
+        # WMO Code 97 (Heavy Thunderstorm) Balanced Enhancements
+        if wmo_code == 97:
+            storm_dim = 1.0
+            cape = max(cape, 1000.0)
+            gusts_0 = max(gusts_0, base_spd * 1.4, 15.0)
+
+        # WMO Code 98 (Thunderstorm with Dust/Sandstorm) Balanced Enhancements
+        if wmo_code == 98:
+            storm_dim = 1.0
+            is_dust_storm = True
+            dust = max(dust, 180.0)
+            pm10 = max(pm10, 240.0)
+
+        if is_dust_storm and dust < 40.0:
+            dust = 150.0
+            pm10 = 200.0
+        
+        if is_snow_storm:
+            icing_index = max(0.9, icing_index)
 
         spread = max(0.0, temp_c - dew_point)
         lcl_base_m = max(150.0, spread * 125.0)
@@ -126,6 +153,36 @@ def fetch_all_weather(lat, lon):
 
         icing_index = max(0.0, (rh_850 - 80.0) / 20.0) * math.exp(-((t_850 + 10.0) / 10.0)**2)
 
+        # Advanced Wet-Bulb Temperature Calculation & Precipitation Phase Profiling
+        rh_2m = float(wx_res.get('relative_humidity_2m') or 70.0)
+        try:
+            term1 = temp_c * math.atan(0.151977 * math.pow(rh_2m + 8.313659, 0.5))
+            term2 = math.atan(temp_c + rh_2m)
+            term3 = math.atan(rh_2m - 1.676331)
+            term4 = 0.00391838 * math.pow(rh_2m, 1.5) * math.atan(0.023101 * rh_2m)
+            wet_bulb_c = term1 + term2 - term3 + term4 - 4.686035
+        except Exception:
+            wet_bulb_c = temp_c - (0.35 * (temp_c - dew_point))
+
+        is_freezing_rain = (temp_c <= 0.0 and t_850 > 1.0 and rain_mm > 0.1)
+        is_wet_snow = (0.0 < wet_bulb_c <= 1.5 and rain_mm > 0.1)
+
+        if is_freezing_rain:
+            icing_index = 1.0
+            precipitation_phase = 4 # Freezing Rain
+        elif is_wet_snow:
+            icing_index = max(0.9, icing_index)
+            precipitation_phase = 3 # Wet Snow
+        elif is_snow_storm:
+            icing_index = max(0.95, icing_index)
+            precipitation_phase = 2 # Snow
+        elif is_dust_storm:
+            precipitation_phase = 5 # Dust Storm
+        elif rain_mm > 0.1:
+            precipitation_phase = 1 # Rain
+        else:
+            precipitation_phase = 0 # Clear / Dry
+
         base_dir = float(wx_res.get('wind_direction_10m') or 0.0)
         base_spd = float(wx_res.get('wind_speed_10m') or 2.0)
         gusts_0 = float(wx_res.get('wind_gusts_10m') or (base_spd * 1.3))
@@ -135,10 +192,12 @@ def fetch_all_weather(lat, lon):
         f_rh = max(1.0, min(f_rh, 5.0))
         
         base_extinction = 0.04
-        pm25_ext = (pm25 * 0.0025) * f_rh
-        dust_ext = (dust * 0.0028) * (1.0 + ((f_rh - 1.0) * 0.5))
+        pm25_ext = (pm25 * 0.002) * f_rh
+        dust_ext = (dust * 0.0022) * (1.0 + ((f_rh - 1.0) * 0.5))
+        # Realistic smoke (CO), volcanic/industrial SO2, and aerosol optical depth (AOD) extinction
+        smoke_ext = (max(0.0, co - 250.0) * 0.0001) + (max(0.0, so2 - 10.0) * 0.0008) + (max(0.0, aod - 0.2) * 1.0)
         
-        total_extinction = base_extinction + pm25_ext + dust_ext
+        total_extinction = base_extinction + pm25_ext + dust_ext + smoke_ext
         calc_vis_km = 3.912 / max(0.01, total_extinction)
         
         if spread <= 1.0:
@@ -153,6 +212,8 @@ def fetch_all_weather(lat, lon):
             "qnh_trend_hpa": round(qnh_trend_hpa, 2),
             "temp_c": round(temp_c, 1),
             "dew_point": round(dew_point, 1),
+            "wet_bulb_c": round(wet_bulb_c, 1),
+            "precipitation_phase": precipitation_phase,
             "vis_km": round(calc_vis_km, 1),
             "rain_percent": round(rain_percent, 3),
             "storm_dim": storm_dim,
@@ -206,6 +267,14 @@ def fetch_all_weather(lat, lon):
                 w_spd = round(get_hourly_val(spd_var, base_spd), 1)
                 w_dir = int(get_hourly_val(dir_var, base_dir))
 
+            # Safety measure clamping and adjustments for extreme weather (Storm / Dusty / Snow Storm)
+            if storm_dim > 0.0:
+                if i <= 5:
+                    w_spd = max(w_spd, base_spd * 1.1)
+            if is_dust_storm and i <= 3:
+                w_spd = max(w_spd, 6.0)
+
+            w_dir = w_dir % 360
             spds.append(w_spd)
             dirs.append(w_dir)
             weather_data[f"w_dir_{i}"] = w_dir
@@ -227,9 +296,36 @@ def fetch_all_weather(lat, lon):
                 shr_dir = round(dir_diff * 0.15, 4)
                 turb = round(min(1.0, max(0.0, (spd_diff / 40.0))), 4)
 
-            weather_data[f"turb_{i}"] = turb
-            weather_data[f"shr_dir_{i}"] = shr_dir
-            weather_data[f"shr_spd_{i}"] = shr_spd
+            # Storm, Dusty Storm, Snow Storm Safety Measures & Dynamic Microburst / LLWS Generator
+            if storm_dim > 0.0 or cape > 1000.0:
+                if i == 0:
+                    w_spd = max(w_spd, base_spd * 1.3, gusts_0)
+                    shr_spd = max(shr_spd, 8.5)
+                    turb = min(1.0, max(turb, 0.65))
+                elif i == 1:
+                    w_spd = max(w_spd, base_spd * 1.2)
+                    shr_spd = max(shr_spd, 7.0)
+                    turb = min(1.0, max(turb, 0.55))
+                elif i == 2:
+                    shr_spd = max(shr_spd, 5.5)
+                    turb = min(1.0, max(turb, 0.45))
+                if i <= 6:
+                    turb = min(1.0, max(turb, 0.45 + (cape / 4000.0)))
+                    shr_spd = min(shr_spd * 1.5, 25.0)
+            if is_dust_storm:
+                if i <= 3:
+                    turb = min(1.0, max(turb, 0.35))
+            if is_snow_storm:
+                if i <= 5:
+                    turb = min(1.0, max(turb, 0.30))
+
+            turb = min(1.0, max(0.0, turb))
+            shr_spd = max(0.0, min(shr_spd, 30.0))
+            shr_dir = shr_dir % 360
+
+            weather_data[f"turb_{i}"] = round(turb, 4)
+            weather_data[f"shr_dir_{i}"] = round(shr_dir, 4)
+            weather_data[f"shr_spd_{i}"] = round(shr_spd, 4)
 
         return weather_data
 
