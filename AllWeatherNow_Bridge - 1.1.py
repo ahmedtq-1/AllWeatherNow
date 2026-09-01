@@ -378,6 +378,11 @@ current_lon = DEFAULT_LON
 
 while True:
     try:
+        try:
+            os.makedirs(SCRIPT_DIR, exist_ok=True)
+        except Exception:
+            pass
+
         loc_file = os.path.join(SCRIPT_DIR, "aircraft_loc.txt")
         target_data = os.path.join(SCRIPT_DIR, "all_weather_data.txt")
 
@@ -420,11 +425,14 @@ while True:
                 print(f" └─ Surface Wind (10m): {data['w_dir_0']:03d}° / {data['w_spd_0']} m/s")
                 print("-" * 65)
                 
-                temp_target = target_data + ".tmp"
-                with open(temp_target, "w") as out:
-                    for key, val in data.items():
-                        out.write(f"{key}={val}\n")
-                os.replace(temp_target, target_data)
+                try:
+                    temp_target = target_data + ".tmp"
+                    with open(temp_target, "w") as out:
+                        for key, val in data.items():
+                            out.write(f"{key}={val}\n")
+                    os.replace(temp_target, target_data)
+                except Exception as write_err:
+                    print(f"[Warning] Failed to write weather data file: {write_err}")
                 
                 last_fetch_time = current_time
                 last_lat = current_lat
