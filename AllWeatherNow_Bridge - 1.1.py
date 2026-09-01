@@ -4,7 +4,34 @@ import math
 import requests
 from datetime import datetime, timezone
 
-SCRIPT_DIR = r"C:\Program Files (x86)\Steam\steamapps\common\X-Plane 12\Resources\plugins\FlyWithLua\Scripts"
+def find_xplane_scripts_dir():
+    # Check if files exist in current working directory first
+    if os.path.exists("aircraft_loc.txt") or os.path.exists("all_weather_data.txt"):
+        return os.getcwd()
+
+    drives = ["C", "D", "E", "F", "G", "H"]
+    common_subpaths = [
+        r"Resources\plugins\FlyWithLua\Scripts",
+        r"X-Plane 12\Resources\plugins\FlyWithLua\Scripts",
+        r"Steam\steamapps\common\X-Plane 12\Resources\plugins\FlyWithLua\Scripts",
+        r"Program Files (x86)\Steam\steamapps\common\X-Plane 12\Resources\plugins\FlyWithLua\Scripts",
+        r"Program Files\Laminar Research\X-Plane 12\Resources\plugins\FlyWithLua\Scripts"
+    ]
+
+    for drive in drives:
+        for subpath in common_subpaths:
+            full_path = f"{drive}:\\{subpath}"
+            if os.path.isdir(full_path):
+                return full_path
+
+    # Fallback to default or current working directory
+    default_path = r"C:\Program Files (x86)\Steam\steamapps\common\X-Plane 12\Resources\plugins\FlyWithLua\Scripts"
+    if os.path.isdir(default_path):
+        return default_path
+
+    return os.getcwd()
+
+SCRIPT_DIR = find_xplane_scripts_dir()
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
