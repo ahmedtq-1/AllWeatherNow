@@ -22,7 +22,6 @@ def calculate_direction(lat1, lon1, lat2, lon2):
     return compass_bearing
 
 def find_xplane_scripts_dir():
-    # Check if files exist in current working directory first
     if os.path.exists("aircraft_loc.txt") or os.path.exists("all_weather_data.txt") or os.path.exists("airports.csv"):
         return os.getcwd()
 
@@ -41,7 +40,6 @@ def find_xplane_scripts_dir():
             if os.path.isdir(full_path):
                 return full_path
 
-    # Fallback to default or current working directory
     default_path = r"C:\Program Files (x86)\Steam\steamapps\common\X-Plane 12\Resources\plugins\FlyWithLua\Scripts"
     if os.path.isdir(default_path):
         return default_path
@@ -68,7 +66,7 @@ def fetch_all_weather(lat, lon):
     )
 
     try:
-        # 1. ISOLATED AIR QUALITY FETCH (Including PM, Dust, CO, SO2, AOD for Smoke/Volcano/Haze Realism)
+        # 1. ISOLATED AIR QUALITY FETCH
         dust, pm10, pm25, co, so2, aod = 0.0, 0.0, 10.0, 150.0, 2.0, 0.15
         try:
             aq_req = requests.get(aq_url, timeout=5)
@@ -95,7 +93,6 @@ def fetch_all_weather(lat, lon):
 
         temp_c = float(wx_res.get('temperature_2m') or 15.0)
         dew_point = float(wx_res.get('dew_point_2m') or 10.0)
-        # Use pressure_msl for standard aviation QNH
         pressure_hpa = float(wx_res.get('pressure_msl') or 1013.25) 
         qnh_inhg = pressure_hpa * 0.0295301
 
@@ -111,7 +108,11 @@ def fetch_all_weather(lat, lon):
         
         rain_percent = min(1.0, max(0.0, rain_mm / 8.0))
         
-        # Enhanced WMO Codes 97 & 98 + Storm / Dusty / Snow Storm Detection & Safety
+        # Initialize base wind variables early to safeguard against NameErrors
+        base_dir = float(wx_res.get('wind_direction_10m') or 0.0)
+        base_spd = float(wx_res.get('wind_speed_10m') or 2.0)
+        gusts_0 = float(wx_res.get('wind_gusts_10m') or (base_spd * 1.3))
+
         storm_dim = 1.0 if wmo_code in [95, 96, 97, 98, 99] else 0.0
         is_dust_storm = (wmo_code in [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 98] or dust > 100.0)
         is_snow_storm = (wmo_code in [71, 73, 75, 77, 85, 86] or (temp_c <= 0.0 and rain_mm > 1.0))
@@ -132,9 +133,6 @@ def fetch_all_weather(lat, lon):
         if is_dust_storm and dust < 40.0:
             dust = 150.0
             pm10 = 200.0
-        
-        if is_snow_storm:
-            icing_index = max(0.9, icing_index)
 
         spread = max(0.0, temp_c - dew_point)
         lcl_base_m = max(150.0, spread * 125.0)
@@ -163,7 +161,6 @@ def fetch_all_weather(lat, lon):
         cloud_high = get_hourly_val('cloud_cover_high', 0.0)
 
         # 4. DECOUPLED CLOUD TYPE DETERMINATION PER LAYER
-        # Low Layer (0: Cirrus/Clear, 1: Stratus, 2: Cumulus, 3: Cumulonimbus)
         if cape > 800 and rain_mm > 0.2:
             cloud_type_low = 3
         elif cape >= 250:
@@ -173,10 +170,7 @@ def fetch_all_weather(lat, lon):
         else:
             cloud_type_low = 0
 
-        # Mid Layer (Altostratus / Altocumulus = 1, Clear = 0)
         cloud_type_mid = 1 if cloud_mid > 20 else 0
-
-        # High Layer (Cirrus = 0)
         cloud_type_high = 0
 
         past_h_idx = max(0, h_idx - 3)
@@ -189,6 +183,8 @@ def fetch_all_weather(lat, lon):
         rh_850 = get_hourly_val('relative_humidity_850hPa', 50.0)
 
         icing_index = max(0.0, (rh_850 - 80.0) / 20.0) * math.exp(-((t_850 + 10.0) / 10.0)**2)
+        if is_snow_storm:
+            icing_index = max(0.9, icing_index)
 
         # Advanced Wet-Bulb Temperature Calculation & Precipitation Phase Profiling
         rh_2m = float(wx_res.get('relative_humidity_2m') or 70.0)
@@ -206,23 +202,19 @@ def fetch_all_weather(lat, lon):
 
         if is_freezing_rain:
             icing_index = 1.0
-            precipitation_phase = 4 # Freezing Rain
+            precipitation_phase = 4
         elif is_wet_snow:
             icing_index = max(0.9, icing_index)
-            precipitation_phase = 3 # Wet Snow
+            precipitation_phase = 3
         elif is_snow_storm:
             icing_index = max(0.95, icing_index)
-            precipitation_phase = 2 # Snow
+            precipitation_phase = 2
         elif is_dust_storm:
-            precipitation_phase = 5 # Dust Storm
+            precipitation_phase = 5
         elif rain_mm > 0.1:
-            precipitation_phase = 1 # Rain
+            precipitation_phase = 1
         else:
-            precipitation_phase = 0 # Clear / Dry
-
-        base_dir = float(wx_res.get('wind_direction_10m') or 0.0)
-        base_spd = float(wx_res.get('wind_speed_10m') or 2.0)
-        gusts_0 = float(wx_res.get('wind_gusts_10m') or (base_spd * 1.3))
+            precipitation_phase = 0
 
         rh_fraction = min(1.0, max(0.1, 1.0 - (spread / 25.0)))
         f_rh = 1.0 + (0.3 / max(0.05, (1.0 - rh_fraction))) * 0.15
@@ -231,7 +223,6 @@ def fetch_all_weather(lat, lon):
         base_extinction = 0.04
         pm25_ext = (pm25 * 0.002) * f_rh
         dust_ext = (dust * 0.0022) * (1.0 + ((f_rh - 1.0) * 0.5))
-        # Realistic smoke (CO), volcanic/industrial SO2, and aerosol optical depth (AOD) extinction
         smoke_ext = (max(0.0, co - 250.0) * 0.0001) + (max(0.0, so2 - 10.0) * 0.0008) + (max(0.0, aod - 0.2) * 1.0)
         
         total_extinction = base_extinction + pm25_ext + dust_ext + smoke_ext
@@ -304,7 +295,6 @@ def fetch_all_weather(lat, lon):
                 w_spd = round(get_hourly_val(spd_var, base_spd), 1)
                 w_dir = int(get_hourly_val(dir_var, base_dir))
 
-            # Safety measure clamping and adjustments for extreme weather (Storm / Dusty / Snow Storm)
             if storm_dim > 0.0:
                 if i <= 5:
                     w_spd = max(w_spd, base_spd * 1.1)
@@ -333,7 +323,6 @@ def fetch_all_weather(lat, lon):
                 shr_dir = round(dir_diff * 0.15, 4)
                 turb = round(min(1.0, max(0.0, (spd_diff / 40.0))), 4)
 
-            # Storm, Dusty Storm, Snow Storm Safety Measures & Dynamic Microburst / LLWS Generator
             if storm_dim > 0.0 or cape > 1000.0:
                 if i == 0:
                     w_spd = max(w_spd, base_spd * 1.3, gusts_0)
@@ -371,65 +360,59 @@ def fetch_all_weather(lat, lon):
         return None
 
 def update_airport_data():
-    # Find the aircraft_loc.txt file
     aircraft_file = [f for f in os.listdir(SCRIPT_DIR) if f == 'aircraft_loc.txt']
     if not aircraft_file:
         print("Aircraft location file (aircraft_loc.txt) not found.")
         return
 
-    # Parse aircraft location data
     parsed_lat = None
     parsed_lon = None
-    with open(os.path.join(SCRIPT_DIR, aircraft_file[0]), 'r') as file:
-        lines = file.readlines()
-        if len(lines) >= 2:
-            try:
-                parsed_lat = float(lines[0].strip())
-                parsed_lon = float(lines[1].strip())
-                print(f"Debug: Parsed Latitude: {parsed_lat}, Parsed Longitude: {parsed_lon}")
-            except ValueError as e:
-                print(f"Error parsing aircraft location file: {e}")
-                return
+    for _ in range(3):
+        try:
+            with open(os.path.join(SCRIPT_DIR, aircraft_file[0]), 'r') as file:
+                lines = file.readlines()
+                if len(lines) >= 2:
+                    parsed_lat = float(lines[0].strip())
+                    parsed_lon = float(lines[1].strip())
+                    break
+        except (ValueError, IOError, PermissionError):
+            time.sleep(0.1)
 
-        if parsed_lat is None or parsed_lon is None:
-            print("Aircraft location file (aircraft_loc.txt) does not contain valid latitude or longitude.")
-            return
+    if parsed_lat is None or parsed_lon is None:
+        print("Aircraft location file (aircraft_loc.txt) does not contain valid latitude or longitude.")
+        return
 
-    # Find the airports.csv file
     airports_file = [f for f in os.listdir(SCRIPT_DIR) if f == 'airports.csv']
     if not airports_file:
         print("Airports file (airports.csv) not found.")
         return
 
-    # Parse airport data
     airports = []
-    with open(os.path.join(SCRIPT_DIR, airports_file[0]), newline='', encoding='utf-8') as csvfile:
-        reader = csv.reader(csvfile)
-        next(reader)  # Skip the header row
-        for row in reader:
-            if len(row) < 6:
-                print(f"Skipping incomplete row in airports.csv: {row}")
-                continue
-            try:
-                airport = {
-                    "ID": row[1],
-                    "Name": row[3],
-                    "Latitude": float(row[4]),
-                    "Longitude": float(row[5])
-                }
-                airports.append(airport)
-            except ValueError as e:
-                print(f"Skipping row due to parsing error: {row} - {e}")
-                continue
+    try:
+        with open(os.path.join(SCRIPT_DIR, airports_file[0]), newline='', encoding='utf-8') as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader)
+            for row in reader:
+                if len(row) < 6:
+                    continue
+                try:
+                    airport = {
+                        "ID": row[1],
+                        "Name": row[3],
+                        "Latitude": float(row[4]),
+                        "Longitude": float(row[5])
+                    }
+                    airports.append(airport)
+                except ValueError:
+                    continue
+    except Exception as e:
+        print(f"Error reading airports.csv: {e}")
+        return
 
-    # Define the distance threshold in kilometers
     distance_threshold_km = 250.0
-
-    # Initialize variables to track the nearest airport
     nearest_airport = None
     nearest_distance = float('inf')
 
-    # Calculate distance and direction for each airport and track the nearest one
     for airport in airports:
         distance = haversine(parsed_lat, parsed_lon, airport["Latitude"], airport["Longitude"])
         direction = calculate_direction(parsed_lat, parsed_lon, airport["Latitude"], airport["Longitude"])
@@ -439,11 +422,14 @@ def update_airport_data():
 
     if nearest_airport:
         print(f"Nearest Airport ID: {nearest_airport['ID']}, Distance: {nearest_distance:.2f} km, Direction: {direction:.0f} degrees")
-        
-        # Update the nearest_airport.txt file in the correct directory
         nearest_airport_file_path = os.path.join(SCRIPT_DIR, "nearest_airport.txt")
-        with open(nearest_airport_file_path, "w") as file:
-            file.write(f"Nearest Airport: {nearest_airport['Name']} (ID: {nearest_airport['ID']}, Distance: {nearest_distance:.2f} km, Direction: {direction:.0f} degrees)")
+        try:
+            temp_airport_target = nearest_airport_file_path + ".tmp"
+            with open(temp_airport_target, "w") as file:
+                file.write(f"Nearest Airport: {nearest_airport['Name']} (ID: {nearest_airport['ID']}, Distance: {nearest_distance:.2f} km, Direction: {direction:.0f} degrees)")
+            os.replace(temp_airport_target, nearest_airport_file_path)
+        except Exception as e:
+            print(f"[Warning] Failed to write nearest_airport.txt: {e}")
     else:
         print("No airports within 250 km found.")
 
@@ -474,17 +460,18 @@ while True:
         target_data = os.path.join(SCRIPT_DIR, "all_weather_data.txt")
 
         if os.path.exists(loc_file):
-            try:
-                with open(loc_file, "r") as f:
-                    lines = f.readlines()
-                    if len(lines) >= 2:
-                        parsed_lat = float(lines[0].strip())
-                        parsed_lon = float(lines[1].strip())
-                        current_lat = parsed_lat
-                        current_lon = parsed_lon
-            except (ValueError, IOError) as e:
-                print(f"Error parsing aircraft location file: {e}")
-                continue
+            for _ in range(3):
+                try:
+                    with open(loc_file, "r") as f:
+                        lines = f.readlines()
+                        if len(lines) >= 2:
+                            parsed_lat = float(lines[0].strip())
+                            parsed_lon = float(lines[1].strip())
+                            current_lat = parsed_lat
+                            current_lon = parsed_lon
+                            break
+                except (ValueError, IOError, PermissionError):
+                    time.sleep(0.1)
 
         current_time = time.time()
         needs_update = False
@@ -526,7 +513,6 @@ while True:
                 last_lat = current_lat
                 last_lon = current_lon
 
-                # Update airport data
                 update_airport_data()
 
     except Exception as outer_e:
