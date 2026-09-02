@@ -88,6 +88,10 @@ safe_dataref("xp_qnh_pas", "sim/weather/region/sealevel_pressure_pas", "writable
 safe_dataref("xp_rain_percent", "sim/weather/region/rain_percent", "writable")
 safe_dataref("xp_storm_dim", "sim/weather/region/storm_dim", "writable")
 
+-- Low-Visibility Photometric Datarefs for Stars & Moon Dimming
+safe_dataref("xp_star_gain", "sim/private/controls/stars/gain_photometric", "writable")
+safe_dataref("xp_moon_nits", "sim/private/controls/moon/nits", "writable")
+
 local xp_storm_points  = safe_dataref_table("sim/weather/region/storm_points")
 
 local fixed_altitudes = {
@@ -140,16 +144,16 @@ local curr_env = {
 }
 
 local target_w_dir, target_w_spd, target_turb = {}, {}, {}
-local target_s_dir, target_s_spd             = {}, {}
+local target_s_dir, target_s_spd              = {}, {}
 
 local curr_w_dir, curr_w_spd, curr_turb        = {}, {}, {}
-local curr_s_dir, curr_s_spd                 = {}, {}
+local curr_s_dir, curr_s_spd                  = {}, {}
 
 for i = 0, 12 do
     target_w_dir[i], target_w_spd[i], target_turb[i] = 0.0, 0.0, 0.0
-    target_s_dir[i], target_s_spd[i]                = 0.0, 0.0
+    target_s_dir[i], target_s_spd[i]                 = 0.0, 0.0
     curr_w_dir[i], curr_w_spd[i], curr_turb[i]        = 0.0, 0.0, 0.0
-    curr_s_dir[i], curr_s_spd[i]                    = 0.0, 0.0
+    curr_s_dir[i], curr_s_spd[i]                     = 0.0, 0.0
 end
 
 local function lerp_scalar(current, target, alpha)
@@ -276,6 +280,20 @@ function process_seamless_frame()
     -- Extinction-Calculated Visibility Injection
     if d_vis_sm then
         XPLMSetDataf(d_vis_sm, curr_env.vis_km / 1.60934)
+    end
+
+    -- Photometric Extinction & Dimming for Stars & Moon Under Low Visibility (< 15km)
+    if curr_env.vis_km < 15.0 then
+        local vis_ratio = math.max(0.0, curr_env.vis_km / 15.0)
+        -- Quadratic scattering curve (Beer-Lambert approximation) for realistic fog/dust obscuration
+        local extinction_factor = vis_ratio * vis_ratio
+
+        if xp_star_gain ~= nil then
+            xp_star_gain = 5.0 * extinction_factor
+        end
+        if xp_moon_nits ~= nil then
+            xp_moon_nits = 2000.0 * extinction_factor
+        end
     end
 
     -- Inject Decoupled Cloud Layers to X-Plane Datarefs
