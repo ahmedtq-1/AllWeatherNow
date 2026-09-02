@@ -3,10 +3,27 @@ import time
 import math
 import requests
 from datetime import datetime, timezone
+import csv
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+def calculate_direction(lat1, lon1, lat2, lon2):
+    dLat = lat2 - lat1
+    dLon = lon2 - lon1
+    initial_bearing = math.atan2(dLon, dLat)
+    initial_bearing = math.degrees(initial_bearing)
+    compass_bearing = (initial_bearing + 360) % 360
+    return compass_bearing
 
 def find_xplane_scripts_dir():
     # Check if files exist in current working directory first
-    if os.path.exists("aircraft_loc.txt") or os.path.exists("all_weather_data.txt"):
+    if os.path.exists("aircraft_loc.txt") or os.path.exists("all_weather_data.txt") or os.path.exists("airports.csv"):
         return os.getcwd()
 
     drives = ["C", "D", "E", "F", "G", "H"]
@@ -32,14 +49,6 @@ def find_xplane_scripts_dir():
     return os.getcwd()
 
 SCRIPT_DIR = find_xplane_scripts_dir()
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
 
 def fetch_all_weather(lat, lon):
     aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=pm10,pm2_5,dust,carbon_monoxide,sulphur_dioxide,aerosol_optical_depth"
@@ -360,6 +369,83 @@ def fetch_all_weather(lat, lon):
         print(f"API Fetch Error: {e}")
         return None
 
+def update_airport_data():
+    # Find the aircraft_loc.txt file
+    aircraft_file = [f for f in os.listdir(SCRIPT_DIR) if f == 'aircraft_loc.txt']
+    if not aircraft_file:
+        print("Aircraft location file (aircraft_loc.txt) not found.")
+        return
+
+    # Parse aircraft location data
+    parsed_lat = None
+    parsed_lon = None
+    with open(os.path.join(SCRIPT_DIR, aircraft_file[0]), 'r') as file:
+        lines = file.readlines()
+        if len(lines) >= 2:
+            try:
+                parsed_lat = float(lines[0].strip())
+                parsed_lon = float(lines[1].strip())
+                print(f"Debug: Parsed Latitude: {parsed_lat}, Parsed Longitude: {parsed_lon}")
+            except ValueError as e:
+                print(f"Error parsing aircraft location file: {e}")
+                return
+
+        if parsed_lat is None or parsed_lon is None:
+            print("Aircraft location file (aircraft_loc.txt) does not contain valid latitude or longitude.")
+            return
+
+    # Find the airports.csv file
+    airports_file = [f for f in os.listdir(SCRIPT_DIR) if f == 'airports.csv']
+    if not airports_file:
+        print("Airports file (airports.csv) not found.")
+        return
+
+    # Parse airport data
+    airports = []
+    with open(os.path.join(SCRIPT_DIR, airports_file[0]), newline='', encoding='utf-8') as csvfile:
+        reader = csv.reader(csvfile)
+        next(reader)  # Skip the header row
+        for row in reader:
+            if len(row) < 6:
+                print(f"Skipping incomplete row in airports.csv: {row}")
+                continue
+            try:
+                airport = {
+                    "ID": row[1],
+                    "Name": row[3],
+                    "Latitude": float(row[4]),
+                    "Longitude": float(row[5])
+                }
+                airports.append(airport)
+            except ValueError as e:
+                print(f"Skipping row due to parsing error: {row} - {e}")
+                continue
+
+    # Define the distance threshold in kilometers
+    distance_threshold_km = 250.0
+
+    # Initialize variables to track the nearest airport
+    nearest_airport = None
+    nearest_distance = float('inf')
+
+    # Calculate distance and direction for each airport and track the nearest one
+    for airport in airports:
+        distance = haversine(parsed_lat, parsed_lon, airport["Latitude"], airport["Longitude"])
+        direction = calculate_direction(parsed_lat, parsed_lon, airport["Latitude"], airport["Longitude"])
+        if distance <= distance_threshold_km and distance < nearest_distance:
+            nearest_distance = distance
+            nearest_airport = airport
+
+    if nearest_airport:
+        print(f"Nearest Airport ID: {nearest_airport['ID']}, Distance: {nearest_distance:.2f} km, Direction: {direction:.0f} degrees")
+        
+        # Update the nearest_airport.txt file in the correct directory
+        nearest_airport_file_path = os.path.join(SCRIPT_DIR, "nearest_airport.txt")
+        with open(nearest_airport_file_path, "w") as file:
+            file.write(f"Nearest Airport: {nearest_airport['Name']} (ID: {nearest_airport['ID']}, Distance: {nearest_distance:.2f} km, Direction: {direction:.0f} degrees)")
+    else:
+        print("No airports within 250 km found.")
+
 print("==================================================")
 print(" AllWeatherNow - Live Atmospheric Bridge Running")
 print(f" Monitoring Path: {SCRIPT_DIR}")
@@ -395,8 +481,9 @@ while True:
                         parsed_lon = float(lines[1].strip())
                         current_lat = parsed_lat
                         current_lon = parsed_lon
-            except (ValueError, IOError):
-                pass
+            except (ValueError, IOError) as e:
+                print(f"Error parsing aircraft location file: {e}")
+                continue
 
         current_time = time.time()
         needs_update = False
@@ -437,6 +524,9 @@ while True:
                 last_fetch_time = current_time
                 last_lat = current_lat
                 last_lon = current_lon
+
+                # Update airport data
+                update_airport_data()
 
     except Exception as outer_e:
         print(f"[LOOP EXCEPTION RECOVERED]: {outer_e}")

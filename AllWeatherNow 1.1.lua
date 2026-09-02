@@ -140,16 +140,16 @@ local curr_env = {
 }
 
 local target_w_dir, target_w_spd, target_turb = {}, {}, {}
-local target_s_dir, target_s_spd               = {}, {}
+local target_s_dir, target_s_spd             = {}, {}
 
 local curr_w_dir, curr_w_spd, curr_turb        = {}, {}, {}
-local curr_s_dir, curr_s_spd                   = {}, {}
+local curr_s_dir, curr_s_spd                 = {}, {}
 
 for i = 0, 12 do
     target_w_dir[i], target_w_spd[i], target_turb[i] = 0.0, 0.0, 0.0
-    target_s_dir[i], target_s_spd[i]               = 0.0, 0.0
+    target_s_dir[i], target_s_spd[i]                = 0.0, 0.0
     curr_w_dir[i], curr_w_spd[i], curr_turb[i]        = 0.0, 0.0, 0.0
-    curr_s_dir[i], curr_s_spd[i]                   = 0.0, 0.0
+    curr_s_dir[i], curr_s_spd[i]                    = 0.0, 0.0
 end
 
 local function lerp_scalar(current, target, alpha)
@@ -204,9 +204,9 @@ function update_weather_bridge()
                     if k == "high_tops_m" then target_clouds[3].tops = val end
 
                     for i = 0, 12 do
-                        if k == "w_dir_" .. i   then target_w_dir[i] = val end
-                        if k == "w_spd_" .. i   then target_w_spd[i] = val end
-                        if k == "turb_" .. i    then target_turb[i]  = val end
+                        if k == "w_dir_" .. i    then target_w_dir[i] = val end
+                        if k == "w_spd_" .. i    then target_w_spd[i] = val end
+                        if k == "turb_" .. i     then target_turb[i]  = val end
                         if k == "shr_dir_" .. i then target_s_dir[i] = val end
                         if k == "shr_spd_" .. i then target_s_spd[i] = val end
                     end
@@ -218,6 +218,17 @@ function update_weather_bridge()
         bridge_status = "Connected (Updates: " .. bridge_update_count .. ")"
     else
         bridge_status = "Error: all_weather_data.txt missing"
+    end
+end
+
+function read_nearest_airport()
+    local file = io.open(SCRIPT_DIRECTORY .. "nearest_airport.txt", "r")
+    if file then
+        local nearest_airport = file:read("*a")
+        file:close()
+        return nearest_airport
+    else
+        return "No nearest airport data"
     end
 end
 
@@ -276,8 +287,23 @@ function process_seamless_frame()
 
         if xp_cloud_base  then xp_cloud_base[i - 1]  = curr_clouds[i].base end
         if xp_cloud_tops  then xp_cloud_tops[i - 1]  = curr_clouds[i].tops end
-        if xp_cloud_cover then xp_cloud_cover[i - 1] = curr_clouds[i].cover end
+        
+        -- Normalize coverage: Convert 0-100 percentage range to X-Plane's expected 0.0-1.0 ratio
+        local cov_ratio = curr_clouds[i].cover
+        if cov_ratio > 1.0 then
+            cov_ratio = cov_ratio / 100.0
+        end
+        cov_ratio = math.max(0.0, math.min(1.0, cov_ratio))
+
+        if xp_cloud_cover then xp_cloud_cover[i - 1] = cov_ratio end
         if xp_cloud_type  then xp_cloud_type[i - 1]  = curr_clouds[i].type end
+    end
+
+    -- Clear remaining unused cloud layers (XP12 supports up to 6 layers: indices 0..5)
+    if xp_cloud_cover then
+        for k = 3, 5 do
+            xp_cloud_cover[k] = 0.0
+        end
     end
 
     if region_wind_alt then
@@ -325,7 +351,7 @@ function draw_weather_osd()
     draw_string(30, 920, "Status: " .. bridge_status, status_color)
 
     -- Line 1: Surface Dynamics & Barometric Pressure
-    local phase_names = {"Clear", "Rain", "Snow", "Wet Snow", "Freez Rain", "Dust Storm"}
+    local phase_names = {"Clear", "Rain", "Snow", "Wet Snow", "Freezing Rain", "Dust Storm"}
     local p_name = phase_names[(math.floor(target_env.precipitation_phase or 0)) + 1] or "Clear"
     draw_string(30, 905, string.format("Temp: %.1fC (Wet: %.1fC) | Dew: %.1fC | QNH: %.2finHg | Vis: %.1fkm | Phase: %s | Storm: %.0f", 
         curr_env.temp_c, target_env.wet_bulb_c or curr_env.temp_c, curr_env.dew_point, target_env.qnh_inhg, curr_env.vis_km, p_name, target_env.storm_dim), "white")
@@ -346,6 +372,10 @@ function draw_weather_osd()
             i, fixed_altitudes[i + 1] or 0, curr_w_dir[i] or 0, curr_w_spd[i] or 0, curr_turb[i] or 0, curr_s_dir[i] or 0, curr_s_spd[i] or 0)
         draw_string(30, y_pos, layer_text, "white")
     end
+
+    -- Nearest Airport Information (Moved down to Y=600 to prevent overlap)
+    local nearest_airport = read_nearest_airport()
+    draw_string(30, 595, "Nearest Airport: " .. nearest_airport, "yellow")
 end
 
 -- FlyWithLua Loop Registrations
