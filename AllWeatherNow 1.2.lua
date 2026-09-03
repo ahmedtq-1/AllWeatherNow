@@ -1,6 +1,6 @@
 -- ============================================================================
 -- AllWeatherNow Unified Physics-Based Weather, Cloud & Atmosphere Engine (FlyWithLua)
--- Integrated with Python Live Atmospheric Bridge
+-- Integrated with Python Live Atmospheric Bridge (Conditional Big-Change Smoothing)
 -- ============================================================================
 
 local last_update = 0
@@ -151,21 +151,34 @@ local curr_s_dir, curr_s_spd                  = {}, {}
 
 for i = 0, 12 do
     target_w_dir[i], target_w_spd[i], target_turb[i] = 0.0, 0.0, 0.0
-    target_s_dir[i], target_s_spd[i]                 = 0.0, 0.0
+    target_s_dir[i], target_s_spd[i]              = 0.0, 0.0
     curr_w_dir[i], curr_w_spd[i], curr_turb[i]        = 0.0, 0.0, 0.0
-    curr_s_dir[i], curr_s_spd[i]                     = 0.0, 0.0
+    curr_s_dir[i], curr_s_spd[i]                  = 0.0, 0.0
 end
 
-local function lerp_scalar(current, target, alpha)
-    return current + (target - current) * alpha
+-- Conditional Big-Change Smoothing Helpers
+local function smooth_big_change(current, target, threshold, alpha)
+    local diff = math.abs(target - current)
+    if diff > threshold then
+        -- Big change detected: apply smooth gradual transition
+        return current + (target - current) * alpha
+    else
+        -- Small change: snap instantly to avoid micro-lag
+        return target
+    end
 end
 
-local function lerp_angle(current, target, alpha)
-    local diff = (target - current + 180) % 360 - 180
-    local res = current + diff * alpha
-    if res < 0 then res = res + 360 end
-    if res >= 360 then res = res - 360 end
-    return res
+local function smooth_big_change_angle(current, target, threshold, alpha)
+    local diff = math.abs((target - current + 180) % 360 - 180)
+    if diff > threshold then
+        local step = (target - current + 180) % 360 - 180
+        local res = current + step * alpha
+        if res < 0 then res = res + 360 end
+        if res >= 360 then res = res - 360 end
+        return res
+    else
+        return target
+    end
 end
 
 function export_aircraft_location()
@@ -240,17 +253,19 @@ function process_seamless_frame()
     if not engine_enabled then return end
 
     local dt = DELTA_TIME or 0.016
-    local alpha = math.min(1.0, dt * 1.2)
+    local alpha = math.min(1.0, dt * 0.4) -- Gentle smoothing rate for major shifts
 
     if d_change_mode then XPLMSetDatai(d_change_mode, 3) end
     if d_update_imm then XPLMSetDatai(d_update_imm, 1) end
 
-    local target_pas      = target_env.qnh_inhg * 3386.39
-    curr_env.temp_c       = lerp_scalar(curr_env.temp_c, target_env.temp_c, alpha)
-    curr_env.dew_point    = lerp_scalar(curr_env.dew_point, target_env.dew_point, alpha)
-    curr_env.qnh_pas      = lerp_scalar(curr_env.qnh_pas, target_pas, alpha)
-    curr_env.vis_km       = lerp_scalar(curr_env.vis_km, target_env.vis_km, alpha)
-    curr_env.rain_percent = lerp_scalar(curr_env.rain_percent, target_env.rain_percent, alpha)
+    local target_pas = target_env.qnh_inhg * 3386.39
+
+    -- Apply conditional smoothing: only smooth if changes breach significant thresholds
+    curr_env.temp_c     = smooth_big_change(curr_env.temp_c, target_env.temp_c, 1.5, alpha)          -- Threshold: 1.5 °C
+    curr_env.dew_point    = smooth_big_change(curr_env.dew_point, target_env.dew_point, 1.5, alpha)    -- Threshold: 1.5 °C
+    curr_env.qnh_pas      = smooth_big_change(curr_env.qnh_pas, target_pas, 150.0, alpha)              -- Threshold: ~1.5 hPa
+    curr_env.vis_km       = smooth_big_change(curr_env.vis_km, target_env.vis_km, 5.0, alpha)          -- Threshold: 5.0 km
+    curr_env.rain_percent = smooth_big_change(curr_env.rain_percent, target_env.rain_percent, 10.0, alpha) -- Threshold: 10%
 
     if xp_temp_c  then xp_temp_c[0] = curr_env.temp_c end
     if xp_dew_c   then xp_dew_c[0]  = curr_env.dew_point end
@@ -285,7 +300,6 @@ function process_seamless_frame()
     -- Photometric Extinction & Dimming for Stars & Moon Under Low Visibility (< 15km)
     if curr_env.vis_km < 15.0 then
         local vis_ratio = math.max(0.0, curr_env.vis_km / 15.0)
-        -- Quadratic scattering curve (Beer-Lambert approximation) for realistic fog/dust obscuration
         local extinction_factor = vis_ratio * vis_ratio
 
         if xp_star_gain ~= nil then
@@ -296,17 +310,16 @@ function process_seamless_frame()
         end
     end
 
-    -- Inject Decoupled Cloud Layers to X-Plane Datarefs
+    -- Inject Decoupled Cloud Layers with Big-Change Conditional Smoothing
     for i = 1, 3 do
-        curr_clouds[i].base  = lerp_scalar(curr_clouds[i].base, target_clouds[i].base, alpha)
-        curr_clouds[i].tops  = lerp_scalar(curr_clouds[i].tops, target_clouds[i].tops, alpha)
-        curr_clouds[i].cover = lerp_scalar(curr_clouds[i].cover, target_clouds[i].cover, alpha)
+        curr_clouds[i].base  = smooth_big_change(curr_clouds[i].base, target_clouds[i].base, 300.0, alpha)   -- Threshold: 300m
+        curr_clouds[i].tops  = smooth_big_change(curr_clouds[i].tops, target_clouds[i].tops, 300.0, alpha)   -- Threshold: 300m
+        curr_clouds[i].cover = smooth_big_change(curr_clouds[i].cover, target_clouds[i].cover, 15.0, alpha) -- Threshold: 15%
         curr_clouds[i].type  = target_clouds[i].type
 
         if xp_cloud_base  then xp_cloud_base[i - 1]  = curr_clouds[i].base end
         if xp_cloud_tops  then xp_cloud_tops[i - 1]  = curr_clouds[i].tops end
         
-        -- Normalize coverage: Convert 0-100 percentage range to X-Plane's expected 0.0-1.0 ratio
         local cov_ratio = curr_clouds[i].cover
         if cov_ratio > 1.0 then
             cov_ratio = cov_ratio / 100.0
@@ -317,7 +330,6 @@ function process_seamless_frame()
         if xp_cloud_type  then xp_cloud_type[i - 1]  = curr_clouds[i].type end
     end
 
-    -- Clear remaining unused cloud layers (XP12 supports up to 6 layers: indices 0..5)
     if xp_cloud_cover then
         for k = 3, 5 do
             xp_cloud_cover[k] = 0.0
@@ -326,11 +338,12 @@ function process_seamless_frame()
 
     if region_wind_alt then
         for i = 0, 12 do
-            curr_w_dir[i] = lerp_angle(curr_w_dir[i], target_w_dir[i], alpha)
-            curr_w_spd[i] = lerp_scalar(curr_w_spd[i], target_w_spd[i], alpha)
-            curr_turb[i]  = lerp_scalar(curr_turb[i], target_turb[i], alpha)
-            curr_s_dir[i] = lerp_angle(curr_s_dir[i], target_s_dir[i], alpha)
-            curr_s_spd[i] = lerp_scalar(curr_s_spd[i], target_s_spd[i], alpha)
+            -- Conditional smoothing thresholds for wind layers: >25° dir, >4 m/s spd, >0.05 turb
+            curr_w_dir[i] = smooth_big_change_angle(curr_w_dir[i], target_w_dir[i], 25.0, alpha)
+            curr_w_spd[i] = smooth_big_change(curr_w_spd[i], target_w_spd[i], 4.0, alpha)
+            curr_turb[i]  = smooth_big_change(curr_turb[i], target_turb[i], 0.05, alpha)
+            curr_s_dir[i] = smooth_big_change_angle(curr_s_dir[i], target_s_dir[i], 25.0, alpha)
+            curr_s_spd[i] = smooth_big_change(curr_s_spd[i], target_s_spd[i], 3.0, alpha)
 
             region_wind_alt[i]  = fixed_altitudes[i + 1] or 0.0
             region_wind_dir[i]  = curr_w_dir[i]
@@ -391,7 +404,7 @@ function draw_weather_osd()
         draw_string(30, y_pos, layer_text, "white")
     end
 
-    -- Nearest Airport Information (Moved down to Y=600 to prevent overlap)
+    -- Nearest Airport Information
     local nearest_airport = read_nearest_airport()
     draw_string(30, 595, "Nearest Airport: " .. nearest_airport, "yellow")
 end
