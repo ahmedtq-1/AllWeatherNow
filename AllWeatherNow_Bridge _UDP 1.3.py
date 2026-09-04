@@ -4,6 +4,12 @@ import math
 import requests
 from datetime import datetime, timezone
 import csv
+import socket
+
+# Configure isolated local UDP port for X-Plane transmission (avoiding X-Plane's 49000-49020 range)
+UDP_IP = "127.0.0.1"
+UDP_PORT = 55000
+udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -26,7 +32,7 @@ def calculate_direction(lat1, lon1, lat2, lon2):
     return compass_bearing
     
 def find_xplane_scripts_dir():
-    if os.path.exists("aircraft_loc.txt") or os.path.exists("all_weather_data.txt") or os.path.exists("airports.csv"):
+    if os.path.exists("aircraft_loc.txt") or os.path.exists("airports.csv"):
         return os.getcwd()
 
     drives = ["C", "D", "E", "F", "G", "H"]
@@ -127,7 +133,7 @@ def fetch_all_weather(lat, lon):
         if wmo_code == 97:
             storm_dim = 1.0
             cape = max(cape, 1000.0)
-            gusts_0 = max(gusts_0, base_spd * 1.4, 15.0)
+            gusts_0 = max(gusts_0, base_spd * 1.2, 12.0)
 
         if wmo_code == 98:
             storm_dim = 1.0
@@ -309,9 +315,9 @@ def fetch_all_weather(lat, lon):
 
             if storm_dim > 0.0:
                 if i <= 5:
-                    w_spd = max(w_spd, base_spd * 1.1)
+                    w_spd = max(w_spd, base_spd * 1.05)
             if is_dust_storm and i <= 3:
-                w_spd = max(w_spd, 6.0)
+                w_spd = max(w_spd, 5.0)
 
             w_dir = w_dir % 360
             spds.append(w_spd)
@@ -323,39 +329,49 @@ def fetch_all_weather(lat, lon):
         for i in range(13):
             if i == 0:
                 gust_factor = max(0.0, (gusts_0 - spds[0]))
+                # Realistic, gentle surface shear scaling (reduced coefficient & removed artificial spikes)
                 shr_spd = round(gust_factor * 0.05, 4)
                 shr_dir = 0.0
-                turb = round(min(1.0, max(0.0, (gust_factor / 35.0))), 4)
+                turb = round(min(1.0, max(0.0, (gust_factor / 50.0))), 4)
             else:
                 spd_diff = abs(spds[i] - spds[i-1])
                 dir_diff = abs(dirs[i] - dirs[i-1])
                 if dir_diff > 180:
                     dir_diff = 360 - dir_diff
                 
+                # Softened vertical gradient scaling
                 shr_spd = round(spd_diff * 0.05, 4)
                 shr_dir = round(dir_diff * 0.05, 4)
-                turb = round(min(1.0, max(0.0, (spd_diff / 45.0))), 4)
+                turb = round(min(1.0, max(0.0, (spd_diff / 80.0))), 4)
 
-            if storm_dim > 0.0 or cape > 1000.0:
-                convective_factor = min(0.3, cape / 5000.0) + (0.1 if storm_dim > 0.0 else 0.0)
+            # Progressive, realistic storm & thermal handling (no aggressive forced floors)
+            if storm_dim > 0.0:
                 if i == 0:
-                    w_spd = max(w_spd, base_spd * 1.15, gusts_0 * 0.9)
-                    shr_spd = max(shr_spd, 3.0 + convective_factor * 4.0)
-                    turb = min(1.0, max(turb, 0.25 + convective_factor))
-                elif i <= 3:
-                    shr_spd = max(shr_spd, 2.5 + convective_factor * 3.0)
-                    turb = min(1.0, max(turb, 0.20 + convective_factor * 0.8))
-                elif i <= 6:
-                    turb = min(1.0, max(turb, 0.15 + (cape / 8000.0)))
+                    w_spd = max(w_spd, base_spd * 1.1, gusts_0)
+                    shr_spd = max(shr_spd, 3.0)
+                    turb = min(1.0, max(turb, 0.35))
+                elif i == 1:
+                    w_spd = max(w_spd, base_spd * 1.05)
+                    shr_spd = max(shr_spd, 2.5)
+                    turb = min(1.0, max(turb, 0.25))
+                elif i == 2:
+                    shr_spd = max(shr_spd, 2.0)
+                    turb = min(1.0, max(turb, 0.20))
+                if i <= 6:
+                    turb = min(1.0, max(turb, 0.20 + (cape / 8000.0)))
                     shr_spd = min(shr_spd * 1.1, 10.0)
+            elif cape > 1000.0:
+                # Gentle thermal boundary mixing for warm days without over-agitating flight controls
+                if i <= 3:
+                    turb = min(1.0, max(turb, 0.05 + (cape / 15000.0)))
+                    shr_spd = min(shr_spd, 4.0)
 
             if is_dust_storm:
                 if i <= 3:
-                    turb = min(1.0, max(turb, 0.18))
-                    shr_spd = max(shr_spd, 2.0)
+                    turb = min(1.0, max(turb, 0.25))
             if is_snow_storm:
                 if i <= 5:
-                    turb = min(1.0, max(turb, 0.15))
+                    turb = min(1.0, max(turb, 0.20))
 
             turb = min(1.0, max(0.0, turb))
             shr_spd = max(0.0, min(shr_spd, 12.0))
@@ -446,8 +462,9 @@ def update_airport_data():
         print("No airports within 250 km found.")
 
 print("==================================================")
-print(" AllWeatherNow - Live Atmospheric Bridge Running")
+print(" AllWeatherNow - Live Atmospheric Bridge Running (UDP)")
 print(f" Monitoring Path: {SCRIPT_DIR}")
+print(f" Transmitting UDP packets to 127.0.0.1:{UDP_PORT}")
 print("==================================================")
 
 last_fetch_time = 0
@@ -469,7 +486,6 @@ while True:
             pass
 
         loc_file = os.path.join(SCRIPT_DIR, "aircraft_loc.txt")
-        target_data = os.path.join(SCRIPT_DIR, "all_weather_data.txt")
 
         if os.path.exists(loc_file):
             for _ in range(3):
@@ -513,13 +529,12 @@ while True:
                 print("-" * 65)
                 
                 try:
-                    temp_target = target_data + ".tmp"
-                    with open(temp_target, "w") as out:
-                        for key, val in data.items():
-                            out.write(f"{key}={val}\n")
-                    os.replace(temp_target, target_data)
-                except Exception as write_err:
-                    print(f"[Warning] Failed to write weather data file: {write_err}")
+                    # Serialize dictionary into line-delimited key=value payload and transmit over UDP
+                    payload_lines = [f"{key}={val}" for key, val in data.items()]
+                    payload = "\n".join(payload_lines)
+                    udp_sock.sendto(payload.encode('utf-8'), (UDP_IP, UDP_PORT))
+                except Exception as udp_err:
+                    print(f"[Warning] Failed to transmit weather packet via UDP: {udp_err}")
                 
                 last_fetch_time = current_time
                 last_lat = current_lat
