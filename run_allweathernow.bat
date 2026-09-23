@@ -26,6 +26,6 @@ if %errorlevel% neq 0 (
 
 :: Run the Python bridge script
 echo Starting AllWeatherNow Bridge...
-python AllWeatherNow_Bridge_1_3_6.py
+python AllWeatherNow_Bridge_1_3_7.py
 
 pause
